@@ -1,6 +1,7 @@
 import mlflow.pyfunc
 import numpy as np
 import copy
+from sklearn.preprocessing import OneHotEncoder
 
 
 def load_model_or_uri(model_or_uri):
@@ -10,22 +11,27 @@ def load_model_or_uri(model_or_uri):
         return model_or_uri
 
 
-def _stack_scores(scores_list):
-    new_scores_list = []
-    for scores in scores_list:
-        scores = np.expand_dims(scores, -1)
-        new_scores_list.append(scores)
-    return np.concatenate(new_scores_list, axis=-1)
+def stack_with_onehot(scores):
+    new_scores_l = []
+    for score in scores:
+        n_score = score
+        if len(score.shape) == 1:
+            enc = OneHotEncoder()
+            enc.fit([[i] for i in range(np.min(score), np.max(score) + 1)])
+            n_score = enc.transform(np.expand_dims(score, -1)).toarray()
+        new_scores_l.append(n_score)
+    scores = np.array(new_scores_l)
+    return scores
 
 
 def mean_max(scores):
-    scores = np.mean(scores, -1)
+    scores = np.mean(scores, 0)
     scores = np.argmax(scores, -1)
     return scores
 
 
 class Ensemble(mlflow.pyfunc.PythonModel):
-    def __init__(self, models_list, ensemble_method=mean_max, stack_scores=_stack_scores,
+    def __init__(self, models_list, ensemble_method=mean_max, stack_scores=stack_with_onehot,
                  models_all_cached=False, force_predict_function=False):
         super().__init__()
         if models_all_cached:
@@ -67,7 +73,7 @@ class Ensemble(mlflow.pyfunc.PythonModel):
         else:
             return self._ensemble_method(scores)
 
-    def fit(self, model, data, target, force_scores_compute=False, cache_scores=True):
+    def fit(self, model, data, target, force_scores_compute=True, cache_scores=True):
         """
         may overfit on data-target
         """
@@ -77,9 +83,8 @@ class Ensemble(mlflow.pyfunc.PythonModel):
             data = self.scores_list
 
         data = self._stack_scores(data)
-        data = np.reshape(data, (data.shape[0], -1))
-        model_trained = model.fit(data, target)
-        self.meta_model = model_trained
+        model.fit(data, target)
+        self.meta_model = model
 
     def set_meta_model(self, model):
         self.meta_model = copy.deepcopy(model)
